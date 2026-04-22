@@ -91,7 +91,6 @@ const authCtrl = {
     try {
       const rf_token = req.body.token;
       jwt.verify(rf_token, process.env.ACCESS_TOKEN_SECRET, async (err, result) => {
-        console.log(err);
         if (err) return res.status(400).json({ msg: "Please login now." });
 
         const user = await Users.findById(result.id)

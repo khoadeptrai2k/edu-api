@@ -31,7 +31,8 @@ io.on("connection", (socket) => {
 });
 
 // Create peer server
-ExpressPeerServer(http, { path: "/" });
+const peerServer = ExpressPeerServer(http, { path: "/" });
+app.use("/peerjs", peerServer);
 
 // Routes
 app.use("/api", require("./routes/authRouter"));
