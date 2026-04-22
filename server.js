@@ -13,8 +13,7 @@ const app = express();
 app.use(express.json());
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
-    credentials: true,
+    origin: "*",
   }),
 );
 app.use(cookieParser());
@@ -23,9 +22,7 @@ app.use(cookieParser());
 const http = require("http").createServer(app);
 const io = require("socket.io")(http, {
   cors: {
-    origin: process.env.CLIENT_URL,
-    methods: ["GET", "POST"],
-    credentials: true,
+    origin: "*",
   },
 });
 
