@@ -13,7 +13,7 @@ const rateLimit = require("./middleware/rateLimit");
 const { getRedisClient } = require("./utils/redisClient");
 
 const app = express();
-app.set("trust proxy", 1);
+// app.set("trust proxy", 1);
 app.use(express.json({ limit: "2mb" }));
 app.use(
   cors({
@@ -62,8 +62,7 @@ configureSessionStore();
 const http = require("http").createServer(app);
 const io = require("socket.io")(http, {
   cors: {
-    origin: process.env.CLIENT_URL || "*",
-    credentials: true,
+    origin: "*",
   },
 });
 
