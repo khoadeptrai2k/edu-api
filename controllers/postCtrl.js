@@ -1,39 +1,86 @@
 const Posts = require('../models/postModel')
 const Comments = require('../models/commentModel')
 const Users = require('../models/userModel')
+const APIFeatures = require('../utils/apiFeatures')
+const { getJSON, setJSON, delByPattern } = require('../utils/redisClient')
+const { incrementLearnerScore } = require('../utils/leaderboard')
+const { getAIAssistantUser, generateLearningComment } = require('../utils/aiLearningAssistant')
 
-class APIfeatures {
-    constructor(query, queryString){
-        this.query = query;
-        this.queryString = queryString;
-    }
-
-    paginating(){
-        const page = this.queryString.page * 1 || 1
-        const limit = this.queryString.limit * 1 || 9
-        const skip = (page - 1) * limit
-        this.query = this.query.skip(skip).limit(limit)
-        return this;
-    }
-}
+const populatePost = (query) => query
+    .populate("user likes", "avatar username fullname followers")
+    .populate({
+        path: "comments",
+        populate: {
+            path: "user likes",
+            select: "-password"
+        }
+    })
 
 const postCtrl = {
     createPost: async (req, res) => {
         try {
             const { content, images } = req.body
 
-            if(images.length === 0)
+            if(!Array.isArray(images) || images.length === 0)
             return res.status(400).json({msg: "Please add your photo."})
 
+            const isPremium = Boolean(req.user.aiEnabled)
             const newPost = new Posts({
-                content, images, user: req.user._id
+                content,
+                images,
+                user: req.user._id,
+                premium: isPremium,
+                tags: isPremium ? ['premium'] : []
             })
             await newPost.save()
+
+            let aiComment = null
+            if(isPremium && content && content.trim()){
+                try {
+                    const ai = await generateLearningComment({
+                        content,
+                        focus: req.user.aiLearningFocus
+                    })
+
+                    if(ai && ai.text){
+                        const aiUser = await getAIAssistantUser()
+                        aiComment = await Comments.create({
+                            user: aiUser._id,
+                            content: ai.text,
+                            postId: newPost._id,
+                            postUserId: req.user._id,
+                            isAI: true,
+                            aiMeta: {
+                                model: ai.model,
+                                provider: 'openai'
+                            }
+                        })
+                        await Posts.findByIdAndUpdate(newPost._id, {
+                            $addToSet: {comments: aiComment._id}
+                        })
+                        aiComment = {
+                            ...aiComment._doc,
+                            user: {
+                                _id: aiUser._id,
+                                avatar: aiUser.avatar,
+                                username: aiUser.username,
+                                fullname: aiUser.fullname
+                            }
+                        }
+                    }
+                } catch (aiErr) {
+                    console.warn('AI learning comment skipped:', aiErr.message)
+                }
+            }
+            await delByPattern(`feed:${req.user._id}:*`)
+            await delByPattern(`discover:*`)
+            await incrementLearnerScore(req.user._id, 5)
 
             res.json({
                 msg: 'Created Post!',
                 newPost: {
                     ...newPost._doc,
+                    comments: aiComment ? [aiComment] : [],
                     user: req.user
                 }
             })
@@ -43,25 +90,23 @@ const postCtrl = {
     },
     getPosts: async (req, res) => {
         try {
-            const features =  new APIfeatures(Posts.find({
+            const cacheKey = `feed:${req.user._id}:${req.query.page || 1}:${req.query.limit || 9}`
+            const cached = await getJSON(cacheKey)
+            if(cached) return res.json(cached)
+
+            const features =  new APIFeatures(Posts.find({
                 user: [...req.user.following, req.user._id]
             }), req.query).paginating()
 
-            const posts = await features.query.sort('-createdAt')
-            .populate("user likes", "avatar username fullname followers")
-            .populate({
-                path: "comments",
-                populate: {
-                    path: "user likes",
-                    select: "-password"
-                }
-            })
+            const posts = await populatePost(features.query.sort('-createdAt'))
 
-            res.json({
+            const payload = {
                 msg: 'Success!',
                 result: posts.length,
                 posts
-            })
+            }
+            await setJSON(cacheKey, payload, 30)
+            res.json(payload)
 
         } catch (err) {
             return res.status(500).json({msg: err.message})
@@ -71,23 +116,17 @@ const postCtrl = {
         try {
             const { content, images } = req.body
 
-            const post = await Posts.findOneAndUpdate({_id: req.params.id}, {
+            const post = await populatePost(Posts.findOneAndUpdate({_id: req.params.id, user: req.user._id}, {
                 content, images
-            }).populate("user likes", "avatar username fullname")
-            .populate({
-                path: "comments",
-                populate: {
-                    path: "user likes",
-                    select: "-password"
-                }
-            })
+            }, { new: true }))
+
+            if(!post) return res.status(404).json({msg: 'This post does not exist or is not yours.'})
+            await delByPattern(`feed:*`)
+            await delByPattern(`discover:*`)
 
             res.json({
                 msg: "Updated Post!",
-                newPost: {
-                    ...post._doc,
-                    content, images
-                }
+                newPost: post
             })
         } catch (err) {
             return res.status(500).json({msg: err.message})
@@ -95,15 +134,14 @@ const postCtrl = {
     },
     likePost: async (req, res) => {
         try {
-            const post = await Posts.find({_id: req.params.id, likes: req.user._id})
-            if(post.length > 0) return res.status(400).json({msg: "You liked this post."})
-
             const like = await Posts.findOneAndUpdate({_id: req.params.id}, {
-                $push: {likes: req.user._id}
+                $addToSet: {likes: req.user._id}
             }, {new: true})
 
             if(!like) return res.status(400).json({msg: 'This post does not exist.'})
 
+            await delByPattern(`feed:*`)
+            await incrementLearnerScore(req.user._id, 1)
             res.json({msg: 'Liked Post!'})
 
         } catch (err) {
@@ -119,6 +157,7 @@ const postCtrl = {
 
             if(!like) return res.status(400).json({msg: 'This post does not exist.'})
 
+            await delByPattern(`feed:*`)
             res.json({msg: 'UnLiked Post!'})
 
         } catch (err) {
@@ -127,9 +166,9 @@ const postCtrl = {
     },
     getUserPosts: async (req, res) => {
         try {
-            const features = new APIfeatures(Posts.find({user: req.params.id}), req.query)
+            const features = new APIFeatures(Posts.find({user: req.params.id}), req.query)
             .paginating()
-            const posts = await features.query.sort("-createdAt")
+            const posts = await populatePost(features.query.sort("-createdAt"))
 
             res.json({
                 posts,
@@ -142,15 +181,7 @@ const postCtrl = {
     },
     getPost: async (req, res) => {
         try {
-            const post = await Posts.findById(req.params.id)
-            .populate("user likes", "avatar username fullname followers")
-            .populate({
-                path: "comments",
-                populate: {
-                    path: "user likes",
-                    select: "-password"
-                }
-            })
+            const post = await populatePost(Posts.findById(req.params.id))
 
             if(!post) return res.status(400).json({msg: 'This post does not exist.'})
 
@@ -167,18 +198,24 @@ const postCtrl = {
 
             const newArr = [...req.user.following, req.user._id]
 
-            const num  = req.query.num || 9
+            const num  = Math.min(Number(req.query.num) || 9, 30)
+            const cacheKey = `discover:${req.user._id}:${num}`
+            const cached = await getJSON(cacheKey)
+            if(cached) return res.json(cached)
 
             const posts = await Posts.aggregate([
                 { $match: { user : { $nin: newArr } } },
-                { $sample: { size: Number(num) } },
+                { $sample: { size: num } },
             ])
+            await Posts.populate(posts, { path: "user likes", select: "avatar username fullname followers" })
 
-            return res.json({
+            const payload = {
                 msg: 'Success!',
                 result: posts.length,
                 posts
-            })
+            }
+            await setJSON(cacheKey, payload, 60)
+            return res.json(payload)
 
         } catch (err) {
             return res.status(500).json({msg: err.message})
@@ -187,7 +224,10 @@ const postCtrl = {
     deletePost: async (req, res) => {
         try {
             const post = await Posts.findOneAndDelete({_id: req.params.id, user: req.user._id})
+            if(!post) return res.status(404).json({msg: 'This post does not exist or is not yours.'})
             await Comments.deleteMany({_id: {$in: post.comments }})
+            await delByPattern(`feed:*`)
+            await delByPattern(`discover:*`)
 
             res.json({
                 msg: 'Deleted Post!',
@@ -203,11 +243,8 @@ const postCtrl = {
     },
     savePost: async (req, res) => {
         try {
-            const user = await Users.find({_id: req.user._id, saved: req.params.id})
-            if(user.length > 0) return res.status(400).json({msg: "You saved this post."})
-
             const save = await Users.findOneAndUpdate({_id: req.user._id}, {
-                $push: {saved: req.params.id}
+                $addToSet: {saved: req.params.id}
             }, {new: true})
 
             if(!save) return res.status(400).json({msg: 'This user does not exist.'})
@@ -234,11 +271,11 @@ const postCtrl = {
     },
     getSavePosts: async (req, res) => {
         try {
-            const features = new APIfeatures(Posts.find({
+            const features = new APIFeatures(Posts.find({
                 _id: {$in: req.user.saved}
             }), req.query).paginating()
 
-            const savePosts = await features.query.sort("-createdAt")
+            const savePosts = await populatePost(features.query.sort("-createdAt"))
 
             res.json({
                 savePosts,

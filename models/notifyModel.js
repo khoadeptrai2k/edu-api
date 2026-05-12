@@ -1,9 +1,9 @@
 const mongoose = require('mongoose')
 
 const notifySchema = new mongoose.Schema({
-    id: mongoose.Types.ObjectId,
-    user: {type: mongoose.Types.ObjectId, ref: 'user'},
-    recipients: [mongoose.Types.ObjectId],
+    id: mongoose.Schema.Types.ObjectId,
+    user: {type: mongoose.Schema.Types.ObjectId, ref: 'user', required: true},
+    recipients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'user' }],
     url: String,
     text: String,
     content: String,
@@ -12,5 +12,10 @@ const notifySchema = new mongoose.Schema({
 }, {
     timestamps: true
 })
+
+notifySchema.index({ recipients: 1, createdAt: -1 })
+notifySchema.index({ user: 1, createdAt: -1 })
+notifySchema.index({ id: 1, url: 1 })
+notifySchema.index({ isRead: 1 })
 
 module.exports = mongoose.model('notify', notifySchema)

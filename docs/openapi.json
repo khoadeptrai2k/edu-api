@@ -1,0 +1,136 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Edu Social API",
+    "version": "2.0.0",
+    "description": "Social learning network API with posts, comments, messaging, notifications, smart feeds, search, and gamification."
+  },
+  "servers": [
+    { "url": "http://localhost:9090/api" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/register": {
+      "post": {
+        "security": [],
+        "summary": "Create a user account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["fullname", "username", "email", "password"],
+                "properties": {
+                  "fullname": { "type": "string" },
+                  "username": { "type": "string" },
+                  "email": { "type": "string" },
+                  "password": { "type": "string" },
+                  "gender": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Registered" } }
+      }
+    },
+    "/login": {
+      "post": {
+        "security": [],
+        "summary": "Login and receive an access token",
+        "responses": { "200": { "description": "Logged in" } }
+      }
+    },
+    "/refresh_token": {
+      "post": {
+        "security": [],
+        "summary": "Refresh JWT access token from refresh cookie or body token",
+        "responses": { "200": { "description": "Access token refreshed" } }
+      }
+    },
+    "/posts": {
+      "get": {
+        "summary": "Get paginated home feed posts",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "Feed posts" } }
+      },
+      "post": {
+        "summary": "Create a post",
+        "responses": { "200": { "description": "Post created" } }
+      }
+    },
+    "/post/{id}": {
+      "get": {
+        "summary": "Get a post by id",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Post" } }
+      },
+      "patch": {
+        "summary": "Update your post",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Post updated" } }
+      },
+      "delete": {
+        "summary": "Delete your post",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Post deleted" } }
+      }
+    },
+    "/feed/smart": {
+      "get": {
+        "summary": "Personalized smart feed scored by social engagement",
+        "responses": { "200": { "description": "Smart feed" } }
+      }
+    },
+    "/leaderboard": {
+      "get": {
+        "summary": "Redis sorted-set learner leaderboard",
+        "responses": { "200": { "description": "Leaderboard" } }
+      }
+    },
+    "/progress": {
+      "post": {
+        "summary": "Add gamification points for the authenticated learner",
+        "responses": { "200": { "description": "Progress recorded" } }
+      }
+    },
+    "/ai-search": {
+      "get": {
+        "summary": "Interest-based content suggestion search",
+        "parameters": [{ "name": "q", "in": "query", "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Suggested users and posts" } }
+      }
+    },
+    "/conversations": {
+      "get": {
+        "summary": "Get conversations",
+        "responses": { "200": { "description": "Conversations" } }
+      }
+    },
+    "/message": {
+      "post": {
+        "summary": "Create a direct message",
+        "responses": { "200": { "description": "Message created" } }
+      }
+    },
+    "/notifies": {
+      "get": {
+        "summary": "Get notifications",
+        "responses": { "200": { "description": "Notifications" } }
+      }
+    }
+  }
+}

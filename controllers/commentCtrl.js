@@ -1,11 +1,14 @@
 const Comments = require('../models/commentModel')
 const Posts = require('../models/postModel')
+const { delByPattern } = require('../utils/redisClient')
+const { incrementLearnerScore } = require('../utils/leaderboard')
 
 
 const commentCtrl = {
     createComment: async (req, res) => {
         try {
             const { postId, content, tag, reply, postUserId } = req.body
+            if(!content || !content.trim()) return res.status(400).json({msg: "Please add comment content."})
 
             const post = await Posts.findById(postId)
             if(!post) return res.status(400).json({msg: "This post does not exist."})
@@ -20,10 +23,12 @@ const commentCtrl = {
             })
 
             await Posts.findOneAndUpdate({_id: postId}, {
-                $push: {comments: newComment._id}
+                $addToSet: {comments: newComment._id}
             }, {new: true})
 
             await newComment.save()
+            await delByPattern(`feed:*`)
+            await incrementLearnerScore(req.user._id, 2)
 
             res.json({newComment})
 
@@ -35,9 +40,13 @@ const commentCtrl = {
         try {
             const { content } = req.body
             
-            await Comments.findOneAndUpdate({
+            if(!content || !content.trim()) return res.status(400).json({msg: "Please add comment content."})
+
+            const comment = await Comments.findOneAndUpdate({
                 _id: req.params.id, user: req.user._id
-            }, {content})
+            }, {content}, { new: true })
+            if(!comment) return res.status(404).json({msg: "Comment does not exist or is not yours."})
+            await delByPattern(`feed:*`)
 
             res.json({msg: 'Update Success!'})
 
@@ -47,12 +56,11 @@ const commentCtrl = {
     },
     likeComment: async (req, res) => {
         try {
-            const comment = await Comments.find({_id: req.params.id, likes: req.user._id})
-            if(comment.length > 0) return res.status(400).json({msg: "You liked this post."})
-
-            await Comments.findOneAndUpdate({_id: req.params.id}, {
-                $push: {likes: req.user._id}
+            const comment = await Comments.findOneAndUpdate({_id: req.params.id}, {
+                $addToSet: {likes: req.user._id}
             }, {new: true})
+            if(!comment) return res.status(404).json({msg: "Comment does not exist."})
+            await delByPattern(`feed:*`)
 
             res.json({msg: 'Liked Comment!'})
 
@@ -63,9 +71,11 @@ const commentCtrl = {
     unLikeComment: async (req, res) => {
         try {
 
-            await Comments.findOneAndUpdate({_id: req.params.id}, {
+            const comment = await Comments.findOneAndUpdate({_id: req.params.id}, {
                 $pull: {likes: req.user._id}
             }, {new: true})
+            if(!comment) return res.status(404).json({msg: "Comment does not exist."})
+            await delByPattern(`feed:*`)
 
             res.json({msg: 'UnLiked Comment!'})
 
@@ -82,10 +92,12 @@ const commentCtrl = {
                     {postUserId: req.user._id}
                 ]
             })
+            if(!comment) return res.status(404).json({msg: "Comment does not exist or cannot be deleted."})
 
             await Posts.findOneAndUpdate({_id: comment.postId}, {
                 $pull: {comments: req.params.id}
             })
+            await delByPattern(`feed:*`)
 
             res.json({msg: 'Deleted Comment!'})
 

@@ -1,23 +1,59 @@
 /** @format */
 
+const Users = require("./models/userModel");
+
 let users = [];
 
+const toId = (value) => {
+  if (!value) return "";
+  if (value._id) return value._id.toString();
+  return value.toString();
+};
+
+const getRelationIds = (items = []) => items.map(toId);
+const uniqueIds = (items = []) => [...new Set(items.map(toId).filter(Boolean))];
+const emitToUsers = (socket, ids, event, payload) => {
+  uniqueIds(ids).forEach((id) => {
+    socket.to(id).emit(event, payload);
+  });
+};
+
 const EditData = (data, id, call) => {
-  const newData = data.map((item) => (item.id === id ? { ...item, call } : item));
+  const newData = data.map((item) => (item.id === id.toString() ? { ...item, call } : item));
   return newData;
 };
 
 const SocketServer = (socket) => {
   // Connect - Disconnect
-  socket.on("joinUser", (user) => {
-    users = users.filter((u) => u.id !== user._id); // remove old
-    users.push({ id: user._id, socketId: socket.id, followers: user.followers });
+  socket.on("joinUser", async (user) => {
+    if (!user || !user._id) return;
+
+    try {
+      const account = await Users.findById(user._id).select("isActive").lean();
+      if (!account || account.isActive === false) {
+        socket.emit("accountDeactivated");
+        socket.disconnect(true);
+        return;
+      }
+    } catch (err) {
+      console.warn("Socket account status check failed:", err.message);
+      return;
+    }
+
+    users = users.filter((u) => u.id !== user._id.toString());
+    socket.join(user._id.toString());
+    users.push({
+      id: user._id.toString(),
+      socketId: socket.id,
+      followers: getRelationIds(user.followers),
+      following: getRelationIds(user.following),
+    });
   });
 
   socket.on("disconnect", () => {
     const data = users.find((user) => user.socketId === socket.id);
     if (data) {
-      const clients = users.filter((user) => data.followers.find((item) => item._id === user.id));
+      const clients = users.filter((user) => data.followers.includes(user.id));
 
       if (clients.length > 0) {
         clients.forEach((client) => {
@@ -29,7 +65,7 @@ const SocketServer = (socket) => {
         const callUser = users.find((user) => user.id === data.call);
         if (callUser) {
           users = EditData(users, callUser.id, null);
-          socket.to(`${callUser.socketId}`).emit("callerDisconnect");
+          socket.to(callUser.id).emit("callerDisconnect");
         }
       }
     }
@@ -39,123 +75,120 @@ const SocketServer = (socket) => {
 
   // Likes
   socket.on("likePost", (newPost) => {
-    const ids = [...newPost.user.followers, newPost.user._id];
-    const clients = users.filter((user) => ids.includes(user.id));
-
-    if (clients.length > 0) {
-      clients.forEach((client) => {
-        socket.to(`${client.socketId}`).emit("likeToClient", newPost);
-      });
-    }
+    const ids = [...getRelationIds(newPost.user.followers), toId(newPost.user._id)];
+    emitToUsers(socket, ids, "likeToClient", newPost);
   });
 
   socket.on("unLikePost", (newPost) => {
-    const ids = [...newPost.user.followers, newPost.user._id];
-    const clients = users.filter((user) => ids.includes(user.id));
-
-    if (clients.length > 0) {
-      clients.forEach((client) => {
-        socket.to(`${client.socketId}`).emit("unLikeToClient", newPost);
-      });
-    }
+    const ids = [...getRelationIds(newPost.user.followers), toId(newPost.user._id)];
+    emitToUsers(socket, ids, "unLikeToClient", newPost);
   });
 
   // Comments
   socket.on("createComment", (newPost) => {
-    const ids = [...newPost.user.followers, newPost.user._id];
-    const clients = users.filter((user) => ids.includes(user.id));
-
-    if (clients.length > 0) {
-      clients.forEach((client) => {
-        socket.to(`${client.socketId}`).emit("createCommentToClient", newPost);
-      });
-    }
+    const ids = [...getRelationIds(newPost.user.followers), toId(newPost.user._id)];
+    emitToUsers(socket, ids, "createCommentToClient", newPost);
   });
 
   socket.on("deleteComment", (newPost) => {
-    const ids = [...newPost.user.followers, newPost.user._id];
-    const clients = users.filter((user) => ids.includes(user.id));
-
-    if (clients.length > 0) {
-      clients.forEach((client) => {
-        socket.to(`${client.socketId}`).emit("deleteCommentToClient", newPost);
-      });
-    }
+    const ids = [...getRelationIds(newPost.user.followers), toId(newPost.user._id)];
+    emitToUsers(socket, ids, "deleteCommentToClient", newPost);
   });
 
   // Follow
   socket.on("follow", (newUser) => {
-    const user = users.find((user) => user.id === newUser._id);
-    user && socket.to(`${user.socketId}`).emit("followToClient", newUser);
+    socket.to(toId(newUser._id)).emit("followToClient", newUser);
   });
 
   socket.on("unFollow", (newUser) => {
-    const user = users.find((user) => user.id === newUser._id);
-    user && socket.to(`${user.socketId}`).emit("unFollowToClient", newUser);
+    socket.to(toId(newUser._id)).emit("unFollowToClient", newUser);
   });
 
   // Notification
   socket.on("createNotify", (msg) => {
-    const client = users.find((user) => msg.recipients.includes(user.id));
-    client && socket.to(`${client.socketId}`).emit("createNotifyToClient", msg);
+    emitToUsers(socket, msg.recipients, "createNotifyToClient", msg);
   });
 
   socket.on("removeNotify", (msg) => {
-    const client = users.find((user) => msg.recipients.includes(user.id));
-    client && socket.to(`${client.socketId}`).emit("removeNotifyToClient", msg);
+    emitToUsers(socket, msg.recipients, "removeNotifyToClient", msg);
   });
 
   // Message
   socket.on("addMessage", (msg) => {
-    const user = users.find((user) => user.id === msg.recipient);
-    user && socket.to(`${user.socketId}`).emit("addMessageToClient", msg);
+    if (msg.conversationId && Array.isArray(msg.recipients)) {
+      emitToUsers(socket, msg.recipients.filter((id) => toId(id) !== toId(msg.sender)), "addMessageToClient", msg);
+      return;
+    }
+    socket.to(toId(msg.recipient)).emit("addMessageToClient", msg);
+  });
+
+  socket.on("createGroup", (group) => {
+    if (!group || !Array.isArray(group.recipients)) return;
+    emitToUsers(socket, group.recipients, "createGroupToClient", group);
   });
 
   // Check User Online / Offline
   socket.on("checkUserOnline", (data) => {
-    const following = users.filter((user) => data.following.find((item) => item._id === user.id));
+    const followingIds = getRelationIds(data.following);
+    const followerIds = getRelationIds(data.followers);
+    const following = users.filter((user) => followingIds.includes(user.id));
     socket.emit("checkUserOnlineToMe", following);
 
-    const clients = users.filter((user) => data.followers.find((item) => item._id === user.id));
+    const clients = users.filter((user) => followerIds.includes(user.id));
 
     if (clients.length > 0) {
       clients.forEach((client) => {
-        socket.to(`${client.socketId}`).emit("checkUserOnlineToClient", data._id);
+        socket.to(client.id).emit("checkUserOnlineToClient", toId(data._id));
       });
     }
   });
 
   // Call User
   socket.on("callUser", (data) => {
-    users = EditData(users, data.sender, data.recipient);
+    if (data.conversationId && Array.isArray(data.recipients)) {
+      emitToUsers(socket, data.recipients.filter((id) => toId(id) !== toId(data.sender)), "callUserToClient", data);
+      return;
+    }
 
-    const client = users.find((user) => user.id === data.recipient);
+    users = EditData(users, toId(data.sender), toId(data.recipient));
+
+    const client = users.find((user) => user.id === toId(data.recipient));
 
     if (client) {
       if (client.call) {
         socket.emit("userBusy", data);
-        users = EditData(users, data.sender, null);
+        users = EditData(users, toId(data.sender), null);
       } else {
-        users = EditData(users, data.recipient, data.sender);
-        socket.to(`${client.socketId}`).emit("callUserToClient", data);
+        users = EditData(users, toId(data.recipient), toId(data.sender));
+        socket.to(toId(data.recipient)).emit("callUserToClient", data);
       }
     }
   });
 
   socket.on("endCall", (data) => {
-    const client = users.find((user) => user.id === data.sender);
+    const senderId = toId(data.sender);
+    const recipientId = toId(data.recipient);
 
-    if (client) {
-      socket.to(`${client.socketId}`).emit("endCallToClient", data);
-      users = EditData(users, client.id, null);
+    emitToUsers(socket, [senderId, recipientId], "endCallToClient", data);
+    users = EditData(users, senderId, null);
+    users = EditData(users, recipientId, null);
+  });
 
-      if (client.call) {
-        const clientCall = users.find((user) => user.id === client.call);
-        clientCall && socket.to(`${clientCall.socketId}`).emit("endCallToClient", data);
+  socket.on("joinStudyCluster", ({ roomId, user }) => {
+    if (!roomId || !user) return;
+    socket.join(`study:${roomId}`);
+    socket.to(`study:${roomId}`).emit("studyCluster:userJoined", { roomId, user });
+  });
 
-        users = EditData(users, client.call, null);
-      }
-    }
+  socket.on("studyCluster:update", ({ roomId, payload }) => {
+    if (!roomId) return;
+    socket.to(`study:${roomId}`).emit("studyCluster:updateToClient", { roomId, payload });
+  });
+
+  socket.on("leaveStudyCluster", ({ roomId, user }) => {
+    if (!roomId) return;
+    socket.leave(`study:${roomId}`);
+    socket.to(`study:${roomId}`).emit("studyCluster:userLeft", { roomId, user });
   });
 };
 
