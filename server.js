@@ -17,8 +17,7 @@ app.set("trust proxy", 1);
 app.use(express.json({ limit: "2mb" }));
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "*",
-    credentials: true,
+    origin: "*",
   }),
 );
 app.use(cookieParser());
